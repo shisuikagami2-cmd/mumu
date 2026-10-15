@@ -1,0 +1,461 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Nightfall: Zombie Shooter</title>
+<style>
+*{box-sizing:border-box;touch-action:none}
+body{margin:0;overflow:hidden;background:#07111c;color:white;font-family:Arial}
+canvas{display:block;width:100vw;height:100dvh}
+#hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;pointer-events:none}
+.box{background:#07111de8;padding:10px 14px;border:1px solid #40556b;border-radius:12px;font-weight:bold}
+#health{color:#ff4058}#ammo{color:#ffcf55}
+#controls{position:fixed;bottom:20px;left:0;right:0;height:145px;pointer-events:none}
+#joy{position:absolute;left:20px;bottom:0;width:125px;height:125px;border:2px solid #a8c6dd88;background:#07111dbb;border-radius:50%;pointer-events:auto}
+#stick{position:absolute;left:35px;top:35px;width:52px;height:52px;background:#9db5ce;border:2px solid white;border-radius:50%}
+button{position:absolute;pointer-events:auto;border-radius:50%;background:#101e31eF;border:2px solid #8dcfff;color:white;font-weight:bold}
+#fire{right:22px;bottom:4px;width:88px;height:88px;font-size:27px}
+#reload{right:120px;bottom:17px;width:54px;height:54px;font-size:23px}
+#msg{position:fixed;top:43%;width:100%;text-align:center;font-size:30px;font-weight:900;text-shadow:0 3px 15px black;pointer-events:none}
+#startScreen{position:fixed;inset:0;background:linear-gradient(#061329dd,#02060df5);display:flex;align-items:center;justify-content:center;text-align:center;padding:24px}
+#card{max-width:390px;background:#0b1728;border:1px solid #526c89;border-radius:20px;padding:28px;box-shadow:0 0 45px #000}
+h1{font-size:32px;margin:0 0 12px;color:#ff4058}
+p{color:#bdcddd;line-height:1.5}
+#start{position:static;border-radius:12px;width:auto;height:auto;padding:15px 28px;background:#e8324c;font-size:17px}
+@media(min-width:800px){#joy{left:30px;width:140px;height:140px}#fire{right:35px;width:95px;height:95px}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="box" id="health">♥ HP: 100</div>
+  <div class="box" id="ammo">🔫 15 / 90</div>
+  <div class="box" id="kills">☠ 0 / 10</div>
+</div>
+
+<div id="controls">
+  <div id="joy"><div id="stick"></div></div>
+  <button id="reload">↻</button>
+  <button id="fire">➤</button>
+</div>
+
+<div id="msg"></div>
+
+<div id="startScreen">
+  <div id="card">
+    <div style="font-size:55px">🎖️</div>
+    <h1>NIGHTFALL</h1>
+    <h2>ZOMBIE SHOOTER</h2>
+    <p>Tumakbo, umiwas at barilin ang mga zombie. Mabuhay sa madilim na outpost!</p>
+    <p>📱 Joystick: galaw<br>🔫 Shoot: baril<br>↻ Reload: bala</p>
+    <button id="start">▶ START GAME</button>
+  </div>
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+let W,H,dpr;
+function resize(){
+  W=innerWidth;H=innerHeight;
+  dpr=Math.min(devicePixelRatio||1,2);
+  canvas.width=W*dpr;canvas.height=H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+resize();addEventListener("resize",resize);
+
+const player={x:0,y:0,hp:100,angle:0,walk:0};
+let zombies=[],bullets=[],particles=[];
+let ammo=15,reserve=90,kills=0;
+let running=false,paused=false,gameOver=false;
+let joyX=0,joyY=0,joyActive=false;
+let firing=false,reloading=false,aimX=0,aimY=0;
+let last=0,elapsed=0,shootDelay=0,damageDelay=0;
+const keys={};
+
+function newZombie(i){
+  let a=Math.random()*Math.PI*2;
+  let d=450+Math.random()*500;
+  return {
+    x:player.x+Math.cos(a)*d,
+    y:player.y+Math.sin(a)*d,
+    hp:3,speed:35+Math.random()*20,
+    phase:Math.random()*10,attack:0
+  };
+}
+function reset(){
+  player.x=0;player.y=0;player.hp=100;player.walk=0;
+  zombies=[];bullets=[];particles=[];
+  for(let i=0;i<10;i++)zombies.push(newZombie(i));
+  ammo=15;reserve=90;kills=0;elapsed=0;
+  shootDelay=0;damageDelay=0;reloading=false;
+  gameOver=false;updateHUD();
+}
+function updateHUD(){
+  document.getElementById("health").textContent="♥ HP: "+player.hp;
+  document.getElementById("ammo").textContent="🔫 "+ammo+" / "+reserve;
+  document.getElementById("kills").textContent="☠ "+kills+" / 10";
+}
+function say(t){document.getElementById("msg").textContent=t}
+function startGame(){
+  reset();running=true;paused=false;
+  document.getElementById("startScreen").style.display="none";
+}
+document.getElementById("start").onclick=startGame;
+
+function shoot(){
+  if(!running||gameOver||paused||shootDelay>0||reloading)return;
+  if(ammo<=0){say("PRESS ↻ TO RELOAD");setTimeout(()=>say(""),800);return}
+  ammo--;shootDelay=.22;
+  const target=zombies.filter(z=>z.hp>0)
+    .sort((a,b)=>dist(a,player)-dist(b,player))[0];
+  let angle=player.angle;
+  if(target){
+    angle=Math.atan2(target.y-player.y,target.x-player.x);
+    player.angle=angle;
+  }
+  bullets.push({
+    x:player.x+Math.cos(angle)*25,
+    y:player.y+Math.sin(angle)*25,
+    vx:Math.cos(angle)*650,vy:Math.sin(angle)*650,life:.7
+  });
+  for(let i=0;i<4;i++)particles.push({
+    x:player.x+Math.cos(angle)*30,
+    y:player.y+Math.sin(angle)*30,
+    vx:(Math.random()-.5)*100,
+    vy:(Math.random()-.5)*100,life:.15,color:"#ffc65c"
+  });
+  updateHUD();
+}
+function reload(){
+  if(!running||reloading||ammo===15||reserve<=0)return;
+  reloading=true;say("RELOADING...");
+  setTimeout(()=>{
+    if(!running)return;
+    let n=Math.min(15-ammo,reserve);
+    ammo+=n;reserve-=n;reloading=false;
+    say("");updateHUD();
+  },1000);
+}
+document.getElementById("fire").addEventListener("pointerdown",e=>{
+  e.preventDefault();firing=true;shoot();
+});
+["pointerup","pointercancel","pointerleave"].forEach(ev=>
+  document.getElementById("fire").addEventListener(ev,()=>firing=false));
+document.getElementById("reload").addEventListener("pointerdown",e=>{
+  e.preventDefault();reload();
+});
+
+const joy=document.getElementById("joy");
+const stick=document.getElementById("stick");
+joy.addEventListener("pointerdown",e=>{
+  e.preventDefault();joyActive=true;joy.setPointerCapture(e.pointerId);moveJoy(e);
+});
+joy.addEventListener("pointermove",e=>{if(joyActive)moveJoy(e)});
+function moveJoy(e){
+  const r=joy.getBoundingClientRect();
+  let dx=e.clientX-(r.left+r.width/2);
+  let dy=e.clientY-(r.top+r.height/2);
+  const max=r.width*.32,d=Math.hypot(dx,dy);
+  if(d>max){dx*=max/d;dy*=max/d}
+  joyX=dx/max;joyY=dy/max;
+  stick.style.left=`calc(50% + ${dx}px - 26px)`;
+  stick.style.top=`calc(50% + ${dy}px - 26px)`;
+}
+function releaseJoy(){
+  joyActive=false;joyX=joyY=0;
+  stick.style.left="35px";stick.style.top="35px";
+}
+joy.addEventListener("pointerup",releaseJoy);
+joy.addEventListener("pointercancel",releaseJoy);
+
+addEventListener("keydown",e=>{
+  keys[e.key.toLowerCase()]=true;
+  if(e.key.toLowerCase()==="r")reload();
+  if(e.code==="Space"){e.preventDefault();shoot()}
+});
+addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function screen(x,y){return {x:W/2+x-player.x,y:H*.52+y-player.y}}
+
+// Background world
+function background(){
+  let g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,"#061329");g.addColorStop(.5,"#102435");
+  g.addColorStop(1,"#15191b");
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+  // Moon
+  ctx.save();ctx.shadowColor="#9dcfff";ctx.shadowBlur=30;
+  ctx.fillStyle="#d9eaff";ctx.beginPath();
+  ctx.arc(W*.76,H*.15,Math.min(W,H)*.045,0,7);ctx.fill();
+  ctx.restore();
+
+  // Stars
+  for(let i=0;i<65;i++){
+    let x=(i*193)%W,y=(i*71)%(H*.42);
+    ctx.fillStyle="rgba(200,225,255,.6)";
+    ctx.fillRect(x,y,2,2);
+  }
+
+  // Ground
+  ctx.fillStyle="#202528";ctx.fillRect(0,H*.42,W,H*.58);
+
+  // Perspective ground lines
+  ctx.strokeStyle="#53606b33";ctx.lineWidth=1;
+  for(let i=0;i<18;i++){
+    let y=H*.42+i*i*1.4;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+  }
+  for(let i=0;i<14;i++){
+    let x=i*W/13;
+    ctx.beginPath();ctx.moveTo(W/2,H*.42);ctx.lineTo(x,H);ctx.stroke();
+  }
+
+  // Wet ground reflections
+  for(let i=0;i<24;i++){
+    let x=(i*137+elapsed*7)%(W+50);
+    let y=H*.53+(i%7)*H*.065;
+    ctx.fillStyle=i%2?"#67b9e016":"#ffc06b12";
+    ctx.fillRect(x,y,18+i%5*8,3);
+  }
+
+  // Buildings and fences
+  ctx.fillStyle="#0b1721";
+  ctx.fillRect(0,H*.30,W*.18,H*.28);
+  ctx.fillRect(W*.82,H*.32,W*.18,H*.26);
+  ctx.fillStyle="#27333a";
+  for(let x=0;x<W;x+=25){
+    ctx.fillRect(x,H*.39,2,H*.17);
+  }
+  ctx.strokeStyle="#394650";ctx.lineWidth=2;
+  for(let y=H*.40;y<H*.57;y+=18){
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();
+  }
+
+  // Crates
+  drawCrate(W*.12,H*.53,70,55);
+  drawCrate(W*.78,H*.57,85,62);
+  drawCrate(W*.04,H*.64,55,45);
+
+  // Vignette
+  let v=ctx.createRadialGradient(W/2,H/2,H*.15,W/2,H/2,H*.8);
+  v.addColorStop(0,"transparent");v.addColorStop(1,"#0009");
+  ctx.fillStyle=v;ctx.fillRect(0,0,W,H);
+}
+function drawCrate(x,y,w,h){
+  ctx.fillStyle="#473827";ctx.fillRect(x,y,w,h);
+  ctx.fillStyle="#604b31";ctx.fillRect(x+4,y+4,w-8,h-8);
+  ctx.strokeStyle="#241e19";ctx.lineWidth=3;ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle="#8a7048";ctx.lineWidth=2;
+  for(let yy=y+12;yy<y+h;yy+=14){
+    ctx.beginPath();ctx.moveTo(x+3,yy);ctx.lineTo(x+w-3,yy);ctx.stroke();
+  }
+}
+
+// Human player with animated running arms and legs
+function drawPlayer(){
+  let x=W/2,y=H*.72;
+  const moving=Math.hypot(joyX,joyY)>.12||
+    keys.w||keys.a||keys.s||keys.d||
+    keys.arrowup||keys.arrowdown||keys.arrowleft||keys.arrowright;
+  let swing=moving?Math.sin(player.walk*12):0;
+  ctx.save();ctx.translate(x,y);ctx.rotate(player.angle);
+
+  // Shadow
+  ctx.fillStyle="#0008";ctx.beginPath();
+  ctx.ellipse(0,19,23,10,0,0,Math.PI*2);ctx.fill();
+
+  // Legs: swing while running
+  ctx.lineCap="round";
+  ctx.strokeStyle="#111b24";ctx.lineWidth=10;
+  ctx.beginPath();ctx.moveTo(-5,5);ctx.lineTo(-8+swing*8,22);
+  ctx.moveTo(5,5);ctx.lineTo(8-swing*8,22);ctx.stroke();
+
+  // Boots
+  ctx.strokeStyle="#090e14";ctx.lineWidth=8;
+  ctx.beginPath();ctx.moveTo(-8+swing*8,22);ctx.lineTo(-13+swing*8,24);
+  ctx.moveTo(8-swing*8,22);ctx.lineTo(13-swing*8,24);ctx.stroke();
+
+  // Backpack
+  ctx.fillStyle="#263b3d";ctx.fillRect(-15,-12,12,24);
+  ctx.strokeStyle="#65715e";ctx.lineWidth=2;ctx.strokeRect(-15,-12,12,24);
+
+  // Torso
+  let body=ctx.createLinearGradient(-12,0,12,0);
+  body.addColorStop(0,"#273b3b");body.addColorStop(.5,"#66705a");
+  body.addColorStop(1,"#293630");
+  ctx.fillStyle=body;ctx.fillRect(-11,-13,22,27);
+  ctx.strokeStyle="#141f24";ctx.lineWidth=2;ctx.strokeRect(-11,-13,22,27);
+
+  // Arms swing
+  ctx.strokeStyle="#a0a18a";ctx.lineWidth=7;
+  ctx.beginPath();
+  ctx.moveTo(-9,-8);ctx.lineTo(-15+swing*7,1);
+  ctx.moveTo(9,-8);ctx.lineTo(15-swing*7,1);
+  ctx.stroke();
+
+  // Head and helmet
+  ctx.fillStyle="#c4a487";ctx.beginPath();
+  ctx.arc(0,-20,8,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#384b40";ctx.beginPath();
+  ctx.arc(0,-22,9,Math.PI,Math.PI*2);ctx.fill();
+  ctx.fillRect(-9,-22,18,4);
+
+  // Rifle
+  ctx.fillStyle="#111820";ctx.fillRect(2,-5,31,6);
+  ctx.fillStyle="#64717a";ctx.fillRect(22,-7,15,3);
+  ctx.fillStyle="#242a2b";ctx.fillRect(9,0,5,10);
+
+  ctx.restore();
+}
+
+function drawZombie(z){
+  if(z.hp<=0)return;
+  let p=screen(z.x,z.y);
+  if(p.x<-70||p.x>W+70||p.y<-70||p.y>H+70)return;
+  let d=dist(z,player);
+  let s=Math.max(.45,Math.min(1.4,330/(d+100)));
+  ctx.save();ctx.translate(p.x,p.y);
+  let step=Math.sin(z.phase*8)*5;
+
+  ctx.fillStyle="#0008";ctx.beginPath();
+  ctx.ellipse(0,18*s,19*s,6*s,0,0,7);ctx.fill();
+
+  // legs
+  ctx.strokeStyle="#272b27";ctx.lineWidth=7*s;ctx.lineCap="round";
+  ctx.beginPath();ctx.moveTo(-5*s,5*s);ctx.lineTo(-7*s+step*s,19*s);
+  ctx.moveTo(5*s,5*s);ctx.lineTo(7*s-step*s,19*s);ctx.stroke();
+
+  // body
+  ctx.fillStyle="#455644";
+  ctx.fillRect(-12*s,-10*s,24*s,20*s);
+  ctx.fillStyle="#2d3a30";
+  ctx.fillRect(-12*s,-10*s,24*s,5*s);
+
+  // reaching arms
+  ctx.strokeStyle="#68775a";ctx.lineWidth=6*s;
+  ctx.beginPath();ctx.moveTo(-9*s,-5*s);ctx.lineTo(-20*s,5*s+step*s);
+  ctx.moveTo(9*s,-5*s);ctx.lineTo(20*s,5*s-step*s);ctx.stroke();
+
+  // head
+  ctx.fillStyle="#798568";ctx.beginPath();
+  ctx.arc(0,-17*s,8*s,0,Math.PI*2);ctx.fill();
+
+  // glowing eyes
+  ctx.shadowColor="#ff263c";ctx.shadowBlur=10;
+  ctx.fillStyle="#ff243e";
+  ctx.beginPath();ctx.arc(-3*s,-18*s,1.5*s,0,7);
+  ctx.arc(3*s,-18*s,1.5*s,0,7);ctx.fill();
+  ctx.shadowBlur=0;
+
+  // health
+  ctx.fillStyle="#130f15";ctx.fillRect(-12*s,-31*s,24*s,3);
+  ctx.fillStyle="#ff354e";ctx.fillRect(-12*s,-31*s,24*s*(z.hp/3),3);
+  ctx.restore();
+}
+
+function update(dt){
+  if(!running||paused||gameOver)return;
+  elapsed+=dt;shootDelay=Math.max(0,shootDelay-dt);
+  damageDelay=Math.max(0,damageDelay-dt);
+
+  let mx=joyX,my=joyY;
+  if(keys.w||keys.arrowup)my-=1;
+  if(keys.s||keys.arrowdown)my+=1;
+  if(keys.a||keys.arrowleft)mx-=1;
+  if(keys.d||keys.arrowright)mx+=1;
+  let m=Math.hypot(mx,my);
+  if(m>1){mx/=m;my/=m}
+
+  if(m>.05){
+    // Movement and running animation
+    player.x+=mx*190*dt;
+    player.y+=my*190*dt;
+    player.walk+=dt;
+    player.angle=Math.atan2(my,mx);
+  }
+
+  if(firing)shoot();
+
+  // Bullets hit zombies
+  bullets.forEach(b=>{
+    b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
+    for(const z of zombies){
+      if(z.hp>0&&Math.hypot(b.x-z.x,b.y-z.y)<22){
+        z.hp--;b.life=0;
+        if(z.hp<=0){
+          kills++;
+          // New zombie appears after a kill
+          if(kills<10)zombies.push(newZombie(kills));
+          say("ZOMBIE ELIMINATED");
+          setTimeout(()=>{if(running)say("")},500);
+        }
+        break;
+      }
+    }
+  });
+  bullets=bullets.filter(b=>b.life>0);
+
+  // Zombie pursuit
+  for(const z of zombies){
+    if(z.hp<=0)continue;
+    z.phase+=dt;
+    let dx=player.x-z.x,dy=player.y-z.y,d=Math.hypot(dx,dy);
+    if(d>25){z.x+=dx/d*z.speed*dt;z.y+=dy/d*z.speed*dt}
+    else if(damageDelay<=0){
+      player.hp=Math.max(0,player.hp-8);
+      damageDelay=.7;updateHUD();
+    }
+  }
+
+  particles.forEach(p=>{
+    p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;
+  });
+  particles=particles.filter(p=>p.life>0);
+
+  if(player.hp<=0)endGame(false);
+  if(kills>=10)endGame(true);
+  updateHUD();
+}
+
+function draw(){
+  background();
+  // Sort zombies by distance for depth
+  [...zombies].sort((a,b)=>dist(b,player)-dist(a,player)).forEach(drawZombie);
+  // Bullet streaks
+  for(const b of bullets){
+    let p=screen(b.x,b.y);
+    ctx.fillStyle="#ffd36b";ctx.shadowColor="#ff9b36";ctx.shadowBlur=10;
+    ctx.beginPath();ctx.arc(p.x,p.y,4,0,7);ctx.fill();ctx.shadowBlur=0;
+  }
+  drawPlayer();
+  for(const p of particles){
+    let q=screen(p.x,p.y);ctx.globalAlpha=Math.max(0,p.life*7);
+    ctx.fillStyle=p.color;ctx.fillRect(q.x,q.y,3,3);ctx.globalAlpha=1;
+  }
+}
+
+function endGame(win){
+  gameOver=true;running=false;
+  document.getElementById("startScreen").style.display="flex";
+  document.getElementById("card").innerHTML=`
+  <div style="font-size:50px">${win?"🏆":"☠️"}</div>
+  <h1>${win?"MISSION COMPLETE":"GAME OVER"}</h1>
+  <p>${win?"Nalinis mo ang outpost!":"Naubos ang iyong buhay."}<br>Zombie kills: ${kills}/10</p>
+  <button id="start">↻ PLAY AGAIN</button>`;
+  document.getElementById("start").onclick=startGame;
+}
+
+function loop(t){
+  let dt=Math.min((t-last)/1000||0,.035);last=t;
+  update(dt);draw();requestAnimationFrame(loop);
+}
+reset();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
